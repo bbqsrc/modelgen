@@ -1,10 +1,10 @@
 // Import the yaml library, installed from npm
-const yaml = require("js-yaml")
+import * as yaml from "js-yaml"
 
 // Import the fs library, built into node.js's standard library
-const fs = require("fs")
+import fs from "fs"
 
-function typeOf(value) {
+function typeOf(value: any) {
     if (value === null) {
         return "null"
     }
@@ -16,7 +16,7 @@ function typeOf(value) {
     return typeof value
 }
 
-function generateStruct(structName, fields) {
+function generateStruct(structName: string, fields: { [key: string]: any }) {
     let s = `pub(crate) struct ${structName} {\n`
 
     for (const [fieldName, fieldValue] of Object.entries(fields)) {
@@ -36,7 +36,7 @@ function generateStruct(structName, fields) {
     console.log(s)
 }
 
-function generateEnum(enumName, enumValues) {
+function generateEnum(enumName: string, enumValues: any) {
     let s = `pub(crate) enum ${enumName} {\n`
 
     for (const value of enumValues) {
@@ -48,7 +48,7 @@ function generateEnum(enumName, enumValues) {
         } else if (type === "object") {
             // This is a tuple of operands
             // s += `    ${value}(,.....),\n`
-            const [key, innerTypeObj] = Object.entries(value)[0]
+            const [key, innerTypeObj]: [string, any] = Object.entries(value)[0]
             const innerType = typeOf(innerTypeObj)
 
             if (innerType === "string") {
@@ -69,8 +69,6 @@ function generateEnum(enumName, enumValues) {
                         } else {
                             throw new Error(`Unknown type: ${nestedType}`)
                         }
-    
-                        // console.log("~~~~~", nestedTypeObj, nestedType)
                     }
                     s = s.slice(0, s.length - 2)
 
@@ -80,11 +78,8 @@ function generateEnum(enumName, enumValues) {
             } else {
                 throw new Error(`Unknown type: ${type}`)
             }
-            
-            // console.log('~~~~~', key, innerTypeObj, innerType)
         } else {
             throw new Error(type)
-            console.log(value, type)
         }
     }
 
@@ -99,8 +94,11 @@ function main() {
     const yamlData = fs.readFileSync("./ast.yaml", "utf8")
 
     // Parse the YAML string into a JavaScript object
-    const obj = yaml.safeLoad(yamlData)
+    const obj: any = yaml.safeLoad(yamlData)
 
+    if (obj == null) {
+        throw new Error("Invalid input")
+    }
 
     for (const [key, value] of Object.entries(obj.models)) {
         const type = typeOf(value)
@@ -108,7 +106,7 @@ function main() {
         if (type === "string") {
             console.log(`pub(crate) struct ${key}(pub(crate) ${value});\n`)
         } else if (type === "object") {
-            generateStruct(key, value)
+            generateStruct(key, value as any)
         } else if (type === "array") {
             generateEnum(key, value)
         } else {
