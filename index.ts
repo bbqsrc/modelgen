@@ -4,16 +4,45 @@ import * as yaml from "js-yaml"
 // Import the fs library, built into node.js's standard library
 import fs from "fs"
 
-function typeOf(value: any) {
+enum JsType {
+    Null,
+    Array,
+    Object,
+    Boolean,
+    String,
+    BigInt,
+    Symbol,
+    Undefined,
+    Number
+}
+
+function typeOf(value: any): JsType {
     if (value === null) {
-        return "null"
+        return JsType.Null
     }
 
     if (Array.isArray(value)) {
-        return "array"
+        return JsType.Array
     }
 
-    return typeof value
+    switch (typeof value) {
+        case "object":
+            return JsType.Object
+        case "boolean":
+            return JsType.Boolean
+        case "string":
+            return JsType.String
+        case "number":
+            return JsType.Number
+        case "undefined":
+            return JsType.Undefined
+        case "symbol":
+            return JsType.Symbol
+        case "bigint":
+            return JsType.BigInt
+        default:
+            throw new Error(`Unknown type from typeof: ${typeof value}`)
+    }
 }
 
 function generateStruct(structName: string, fields: { [key: string]: any }) {
@@ -22,9 +51,9 @@ function generateStruct(structName: string, fields: { [key: string]: any }) {
     for (const [fieldName, fieldValue] of Object.entries(fields)) {
         const type = typeOf(fieldValue)
 
-        if (type === "array") {
+        if (type === JsType.Array) {
             s += `    ${fieldName}: Vec<${fieldValue[0]}>,\n`
-        } else if (type === "string") {
+        } else if (type === JsType.String) {
             s += `    ${fieldName}: ${fieldValue},\n`
         } else {
             throw new Error(`Unhandled type: ${type}`)
@@ -42,18 +71,18 @@ function generateEnum(enumName: string, enumValues: any) {
     for (const value of enumValues) {
         const type = typeOf(value)
 
-        if (type === "string") {
+        if (type === JsType.String) {
             // This is self referencing!! WOWEE
             s += `    ${value}(${value}),\n`
-        } else if (type === "object") {
+        } else if (type === JsType.Object) {
             // This is a tuple of operands
             // s += `    ${value}(,.....),\n`
             const [key, innerTypeObj]: [string, any] = Object.entries(value)[0]
             const innerType = typeOf(innerTypeObj)
 
-            if (innerType === "string") {
+            if (innerType === JsType.String) {
                 s += `    ${key}(${innerTypeObj}),\n`
-            } else if (innerType === "array") {
+            } else if (innerType === JsType.Array) {
                 if (innerTypeObj.length === 0) {
                     s += `    ${key},\n`
                 } else {
@@ -61,10 +90,10 @@ function generateEnum(enumName: string, enumValues: any) {
                     for (const nestedTypeObj of innerTypeObj) {
                         const nestedType = typeOf(nestedTypeObj)
     
-                        if (nestedType === "array") {
+                        if (nestedType === JsType.Array) {
                             // This is our empty case
                             s += `Vec<${nestedTypeObj[0]}>, `
-                        } else if (nestedType === "string") {
+                        } else if (nestedType === JsType.String) {
                             s += `${nestedTypeObj}, `
                         } else {
                             throw new Error(`Unknown type: ${nestedType}`)
@@ -79,7 +108,7 @@ function generateEnum(enumName: string, enumValues: any) {
                 throw new Error(`Unknown type: ${type}`)
             }
         } else {
-            throw new Error(type)
+            throw new Error(`Unhandled JS type: ${type}`)
         }
     }
 
@@ -103,11 +132,11 @@ function main() {
     for (const [key, value] of Object.entries(obj.models)) {
         const type = typeOf(value)
         
-        if (type === "string") {
+        if (type === JsType.String) {
             console.log(`pub(crate) struct ${key}(pub(crate) ${value});\n`)
-        } else if (type === "object") {
+        } else if (type === JsType.Object) {
             generateStruct(key, value as any)
-        } else if (type === "array") {
+        } else if (type === JsType.Array) {
             generateEnum(key, value)
         } else {
             console.log(`Warning: Unhandled type for key "${key}": ${type}`)

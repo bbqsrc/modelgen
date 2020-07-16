@@ -4,12 +4,19 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "tsc -p .",
+    "start": "node index.js"
   },
   "author": "Brendan Molloy <brendan@bbqsrc.net>",
   "license": "Apache-2.0 OR MIT",
   "dependencies": {
     "js-yaml": "^3.14.0"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@types/js-yaml": "^3.12.5",
+    "@types/node": "^14.0.23",
+    "typescript": "^3.9.6"
+  }
 }
