@@ -1,0 +1,62 @@
+models:
+  Atom:
+    - Datum
+    - Expression
+    - Record
+    - Procedure
+  Record:
+    - EmptyList: []
+    - List
+  List: [Atom]
+  Datum:
+    - Quotation: Datum
+    - Quasiquotation: Datum
+    - Unquote: Datum
+    - UnquoteSplicing: Datum
+    - List: [Datum]
+    - ImproperList: [[Datum], Datum]
+    - Vector: [Datum]
+    - ByteVector: [u8]
+    - Byte: u8
+    - Boolean: bool
+    - Number
+    - Character: char
+    - String: String
+    - Identifier
+    - Label: usize
+    - Labelled: [usize, Datum]
+    - EmptyList: []
+  CommandOrDefinition:
+    - Command: Expression
+    - Definition
+    - Begin: Vec<CommandOrDefinition>
+  Expression:
+    - Identifier
+    - Literal
+    - ProcedureCall
+    - LambdaExpression
+    - Conditional: If
+    - Assignment
+    - DerivedExpression
+    - MacroUse
+    - MacroBlock
+    - Includer
+  ProcedureCall:
+    operator: Expression
+    operands: [Expression]
+  Identifier: string
+  Literal:
+    - Quotation: Datum
+    - SelfEvaluating
+  SelfEvaluating:
+    - Vector: [Datum]
+    - String
+    - ByteVector: [u8]
+    - Character: char
+    - Boolean: bool
+    - Number
+  Number:
+    - Integer
+    - Rational
+    - Float
+    - Complex
