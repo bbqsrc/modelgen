@@ -221,7 +221,6 @@ class AstParser {
     }
 
     parseEnum(enumName: string, enumValues: unknown[]): EnumSpec {
-        // let s = `pub(crate) enum ${enumName} {\n`
         const cases: { [name: string]: CaseSpec } = {}
     
         for (const value of enumValues) {
@@ -269,7 +268,6 @@ class AstParser {
     }
 }
 
-/// This function does
 function main() {
     // Read the ast.yaml file from the current directory as a string
     const yamlData = fs.readFileSync("./ast.yaml", "utf8")
@@ -294,5 +292,5 @@ function main() {
     generator.generate()
 }
 
-// Run our programs
+// Run our program
 main()
