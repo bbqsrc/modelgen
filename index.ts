@@ -197,6 +197,29 @@ class AstParser {
         return new StructSpec(structName, fields)
     }
     
+    parseEnumValueArray(array: unknown[]): CaseSpec {
+        // Empty case
+        if (array.length === 0) {
+            return new CaseSpec([])
+        }
+
+        if (array.length === 1) {
+            return new CaseSpec([new TypeSpec((array as string[])[0], true)])
+        }
+
+        return new CaseSpec(array.map(obj => {
+            const type = typeOf(obj)
+
+            if (type === JsType.Array) {
+                return new TypeSpec((obj as string[])[0], true)
+            } else if (type === JsType.String) {
+                return new TypeSpec(obj as string)
+            } else {
+                throw new Error(`Unknown type: ${type}`)
+            }
+        }))
+    }
+
     parseEnum(enumName: string, enumValues: unknown[]): EnumSpec {
         // let s = `pub(crate) enum ${enumName} {\n`
         const cases: { [name: string]: CaseSpec } = {}
@@ -215,24 +238,7 @@ class AstParser {
                 if (innerType === JsType.String) {
                     cases[key] = new CaseSpec([new TypeSpec(innerTypeObj as string)])
                 } else if (innerType === JsType.Array) {
-                    const v = innerTypeObj as unknown[]
-                    if (v.length === 0) {
-                        cases[key] = new CaseSpec([])
-                    } else {
-                        for (const nestedTypeObj of v) {
-                            const nestedType = typeOf(nestedTypeObj)
-        
-                            if (nestedType === JsType.Array) {
-                                // This is our empty case
-                                cases[key] = new CaseSpec([new TypeSpec((nestedTypeObj as string[])[0], true)])
-                            } else if (nestedType === JsType.String) {
-                                cases[key] = new CaseSpec([new TypeSpec(nestedTypeObj as string)])
-                            } else {
-                                throw new Error(`Unknown type: ${nestedType}`)
-                            }
-                        }
-                    }
-    
+                    cases[key] = this.parseEnumValueArray(innerTypeObj as unknown[])
                 } else {
                     throw new Error(`Unknown type: ${type}`)
                 }
@@ -281,6 +287,8 @@ function main() {
 
     const parser = new AstParser(obj)
     const models = parser.parse()
+
+    console.log(JSON.stringify(models, null, 2))
 
     const generator = new RustGenerator(models)
     generator.generate()
