@@ -4,6 +4,12 @@ import * as yaml from "js-yaml"
 // Import the fs library, built into node.js's standard library
 import fs from "fs"
 
+type AstModel = unknown[] | Record<string, unknown> | string
+
+type Ast = {
+    models: { [key: string]: AstModel }
+}
+
 enum JsType {
     Null,
     Array,
@@ -16,7 +22,55 @@ enum JsType {
     Number
 }
 
-function typeOf(value: any): JsType {
+class TypeSpec {
+    isArray: boolean
+    type: string | TypeSpec
+
+    constructor(type: string | TypeSpec, isArray = false) {
+        this.isArray = isArray
+        this.type = type
+    }
+}
+
+class StructSpec {
+    name: string
+    fields: { [name: string]: TypeSpec }
+
+    constructor(name: string, fields: { [name: string]: TypeSpec }) {
+        this.name = name
+        this.fields = fields
+    }
+}
+
+class TupleStructSpec {
+    name: string
+    operands: TypeSpec[]
+
+    constructor(name: string, operands: TypeSpec[]) {
+        this.name = name
+        this.operands = operands
+    }
+}
+
+class EnumSpec {
+    name: string
+    cases: { [name: string]: CaseSpec }
+
+    constructor(name: string, cases: { [name: string]: CaseSpec }) {
+        this.name = name
+        this.cases = cases
+    }
+}
+
+class CaseSpec {
+    operands: TypeSpec[]
+
+    constructor(operands: TypeSpec[]) {
+        this.operands = operands
+    }
+}
+
+function typeOf(value: unknown): JsType {
     if (value === null) {
         return JsType.Null
     }
@@ -45,63 +99,130 @@ function typeOf(value: any): JsType {
     }
 }
 
-function generateStruct(structName: string, fields: { [key: string]: any }) {
-    let s = `pub(crate) struct ${structName} {\n`
+type TopLevelSpec = TupleStructSpec | EnumSpec | StructSpec
 
-    for (const [fieldName, fieldValue] of Object.entries(fields)) {
+class RustGenerator {
+    private readonly models: TopLevelSpec[]
+
+    constructor(models: TopLevelSpec[]) {
+        this.models = models
+    }
+
+    resolveType(spec: string | TypeSpec): string {
+        if (typeof spec === "string") {
+            return spec
+        }
+
+        if (spec.isArray) {
+            return `Vec<${this.resolveType(spec.type)}>`
+        }
+
+        return this.resolveType(spec.type)
+    }
+
+    generateTupleStruct(model: TupleStructSpec) {
+        if (model.operands.length > 0) {
+            const operands = model.operands.map(x => this.resolveType(x)).join(", ")
+            console.log(`pub(crate) struct ${model.name}(${operands});\n`)
+        } else {
+            console.log(`pub(crate) struct ${model.name};\n`)
+        }
+    }
+
+    generateStruct(model: StructSpec) {
+        let s = `pub(crate) struct ${model.name} {\n`
+        
+        const fields = Object.entries(model.fields).map(([key, value]) => {
+            return `    ${key}: ${this.resolveType(value)},`
+        })
+
+        s += fields.join("\n")
+        s += `\n}\n`
+        console.log(s)
+    }
+
+    generateEnum(model: EnumSpec) {
+        let s = `pub(crate) enum ${model.name} {\n`
+        const cases = Object.entries(model.cases).map(([key, value]) => {
+            if (value.operands.length === 0) {
+                return `    ${key},`
+            } else {
+                return `    ${key}(${value.operands.map(x => this.resolveType(x)).join(", ")}),`
+            }
+        })
+
+        s += cases.join("\n")
+        s += `\n}\n`
+        console.log(s)
+    }
+
+    generate() {
+        for (const model of this.models) {
+            if (model instanceof TupleStructSpec) {
+                this.generateTupleStruct(model)
+            } else if (model instanceof EnumSpec) {
+                this.generateEnum(model)
+            } else if (model instanceof StructSpec) {
+                this.generateStruct(model)
+            } else {
+                throw new TypeError("impossible")
+            }
+        }
+    }
+}
+
+function generateStruct(structName: string, structFields: Record<string, unknown>): StructSpec {
+    const fields: { [name: string]: TypeSpec } = {}
+
+    for (const [fieldName, fieldValue] of Object.entries(structFields)) {
         const type = typeOf(fieldValue)
 
         if (type === JsType.Array) {
-            s += `    ${fieldName}: Vec<${fieldValue[0]}>,\n`
+            fields[fieldName] = new TypeSpec((fieldValue as string[])[0], true)
         } else if (type === JsType.String) {
-            s += `    ${fieldName}: ${fieldValue},\n`
+            fields[fieldName] = new TypeSpec(fieldValue as string)
         } else {
             throw new Error(`Unhandled type: ${type}`)
         }
     }
 
-    s += "}\n"
-
-    console.log(s)
+    return new StructSpec(structName, fields)
 }
 
-function generateEnum(enumName: string, enumValues: any) {
-    let s = `pub(crate) enum ${enumName} {\n`
+function generateEnum(enumName: string, enumValues: unknown[]): EnumSpec {
+    // let s = `pub(crate) enum ${enumName} {\n`
+    const cases: { [name: string]: CaseSpec } = {}
 
     for (const value of enumValues) {
         const type = typeOf(value)
 
         if (type === JsType.String) {
-            // This is self referencing!! WOWEE
-            s += `    ${value}(${value}),\n`
+            const v = value as string
+            cases[v] = new CaseSpec([new TypeSpec(v)])
         } else if (type === JsType.Object) {
-            // This is a tuple of operands
-            // s += `    ${value}(,.....),\n`
-            const [key, innerTypeObj]: [string, any] = Object.entries(value)[0]
+            const v = value as Record<string, unknown>
+            const [key, innerTypeObj]: [string, unknown] = Object.entries(v)[0]
             const innerType = typeOf(innerTypeObj)
 
             if (innerType === JsType.String) {
-                s += `    ${key}(${innerTypeObj}),\n`
+                cases[key] = new CaseSpec([new TypeSpec(innerTypeObj as string)])
             } else if (innerType === JsType.Array) {
-                if (innerTypeObj.length === 0) {
-                    s += `    ${key},\n`
+                const v = innerTypeObj as unknown[]
+                if (v.length === 0) {
+                    cases[key] = new CaseSpec([])
                 } else {
-                    s += `    ${key}(`
-                    for (const nestedTypeObj of innerTypeObj) {
+                    for (const nestedTypeObj of v) {
                         const nestedType = typeOf(nestedTypeObj)
     
                         if (nestedType === JsType.Array) {
                             // This is our empty case
-                            s += `Vec<${nestedTypeObj[0]}>, `
+                            cases[key] = new CaseSpec([new TypeSpec((nestedTypeObj as string[])[0], true)])
                         } else if (nestedType === JsType.String) {
-                            s += `${nestedTypeObj}, `
+                            cases[key] = new CaseSpec([new TypeSpec(nestedTypeObj as string)])
                         } else {
                             throw new Error(`Unknown type: ${nestedType}`)
                         }
                     }
-                    s = s.slice(0, s.length - 2)
-
-                    s += `),\n`
                 }
 
             } else {
@@ -112,9 +233,7 @@ function generateEnum(enumName: string, enumValues: any) {
         }
     }
 
-    s += "}\n"
-
-    console.log(s)
+    return new EnumSpec(enumName, cases)
 }
 
 /// This function does
@@ -123,37 +242,33 @@ function main() {
     const yamlData = fs.readFileSync("./ast.yaml", "utf8")
 
     // Parse the YAML string into a JavaScript object
-    const obj: any = yaml.safeLoad(yamlData)
+    const obj = yaml.safeLoad(yamlData) as Ast | null
 
     if (obj == null) {
         throw new Error("Invalid input")
     }
 
-    for (const [key, value] of Object.entries(obj.models)) {
+    if (typeof obj.models !== "object") {
+        throw new Error("Invalid input")
+    }
+
+    const models: TopLevelSpec[] = Object.entries(obj.models).map(([key, value]) => {
         const type = typeOf(value)
         
         if (type === JsType.String) {
-            console.log(`pub(crate) struct ${key}(pub(crate) ${value});\n`)
+            return new TupleStructSpec(key, [new TypeSpec(value as string)])
         } else if (type === JsType.Object) {
-            generateStruct(key, value as any)
+            return generateStruct(key, value as Record<string, unknown>)
         } else if (type === JsType.Array) {
-            generateEnum(key, value)
+            return generateEnum(key, value as unknown[])
         } else {
             console.log(`Warning: Unhandled type for key "${key}": ${type}`)
         }
-    }
+    }).filter(x => x != null) as TopLevelSpec[]
+
+    const generator = new RustGenerator(models)
+    generator.generate()
 }
 
 // Run our programs
 main()
-
-// Rust:
-// enum CardinalDirections { North, South, East, West }
-// enum Shape { Square(width, height), Circle(Foo) }
-// struct Foo {
-//   bar: String,
-//   oaisjdoij: Shape
-//}
-
-// Input -> Identifier: 'string'
-// Output -> struct Identifier(String)
