@@ -16,6 +16,55 @@ enum JsType {
     Number
 }
 
+class FieldSpec {
+    isArray: boolean
+    type: string | FieldSpec
+
+    constructor(type: string | FieldSpec, isArray: boolean = false) {
+        this.isArray = isArray
+        this.type = type
+    }
+}
+
+class StructSpec {
+    name: string
+    fields: { [name: string]: FieldSpec }
+
+    constructor(name: string, fields: { [name: string]: FieldSpec }) {
+        this.name = name
+        this.fields = fields
+    }
+}
+
+class TupleStructSpec {
+    name: string
+    operands: FieldSpec[]
+
+    constructor(name: string, operands: FieldSpec[]) {
+        this.name = name
+        this.operands = operands
+    }
+}
+
+class EnumSpec {
+    name: string
+    cases: { [name: string]: CaseSpec }
+
+    constructor(name: string, cases: { [name: string]: CaseSpec }) {
+        this.name = name
+        this.cases = cases
+    }
+}
+
+class CaseSpec {
+    type: string
+
+    constructor(type: string) {
+        this.type = type
+    }
+}
+
+
 function typeOf(value: any): JsType {
     if (value === null) {
         return JsType.Null
@@ -45,35 +94,35 @@ function typeOf(value: any): JsType {
     }
 }
 
-function generateStruct(structName: string, fields: { [key: string]: any }) {
-    let s = `pub(crate) struct ${structName} {\n`
+function generateStruct(structName: string, structFields: { [key: string]: any }): StructSpec {
+    const fields: { [name: string]: FieldSpec } = {}
 
-    for (const [fieldName, fieldValue] of Object.entries(fields)) {
+    for (const [fieldName, fieldValue] of Object.entries(structFields)) {
         const type = typeOf(fieldValue)
 
         if (type === JsType.Array) {
-            s += `    ${fieldName}: Vec<${fieldValue[0]}>,\n`
+            fields[fieldName] = new FieldSpec(fieldValue[0] as string, true)
         } else if (type === JsType.String) {
-            s += `    ${fieldName}: ${fieldValue},\n`
+            fields[fieldName] = new FieldSpec(fieldValue as string)
         } else {
             throw new Error(`Unhandled type: ${type}`)
         }
     }
 
-    s += "}\n"
-
-    console.log(s)
+    return new StructSpec(structName, fields)
 }
 
-function generateEnum(enumName: string, enumValues: any) {
-    let s = `pub(crate) enum ${enumName} {\n`
+function generateEnum(enumName: string, enumValues: any): EnumSpec {
+    // let s = `pub(crate) enum ${enumName} {\n`
+    const cases: { [name: string]: CaseSpec } = {}
 
     for (const value of enumValues) {
         const type = typeOf(value)
 
         if (type === JsType.String) {
             // This is self referencing!! WOWEE
-            s += `    ${value}(${value}),\n`
+            // s += `    ${value}(${value}),\n`
+            cases[value] = new CaseSpec([value])
         } else if (type === JsType.Object) {
             // This is a tuple of operands
             // s += `    ${value}(,.....),\n`
@@ -114,7 +163,8 @@ function generateEnum(enumName: string, enumValues: any) {
 
     s += "}\n"
 
-    console.log(s)
+    // console.log(s)
+    return new EnumSpec(enumName, cases)
 }
 
 /// This function does

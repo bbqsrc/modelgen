@@ -11,6 +11,7 @@
   "author": "Brendan Molloy <brendan@bbqsrc.net>",
   "license": "Apache-2.0 OR MIT",
   "dependencies": {
+    "chance": "^1.1.6",
     "js-yaml": "^3.14.0"
   },
   "private": true,
