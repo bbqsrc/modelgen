@@ -171,69 +171,96 @@ class RustGenerator {
     }
 }
 
-function generateStruct(structName: string, structFields: Record<string, unknown>): StructSpec {
-    const fields: { [name: string]: TypeSpec } = {}
 
-    for (const [fieldName, fieldValue] of Object.entries(structFields)) {
-        const type = typeOf(fieldValue)
+class AstParser {
+    private readonly ast: Ast
 
-        if (type === JsType.Array) {
-            fields[fieldName] = new TypeSpec((fieldValue as string[])[0], true)
-        } else if (type === JsType.String) {
-            fields[fieldName] = new TypeSpec(fieldValue as string)
-        } else {
-            throw new Error(`Unhandled type: ${type}`)
-        }
+    constructor(ast: Ast) {
+        this.ast = ast
     }
 
-    return new StructSpec(structName, fields)
-}
-
-function generateEnum(enumName: string, enumValues: unknown[]): EnumSpec {
-    // let s = `pub(crate) enum ${enumName} {\n`
-    const cases: { [name: string]: CaseSpec } = {}
-
-    for (const value of enumValues) {
-        const type = typeOf(value)
-
-        if (type === JsType.String) {
-            const v = value as string
-            cases[v] = new CaseSpec([new TypeSpec(v)])
-        } else if (type === JsType.Object) {
-            const v = value as Record<string, unknown>
-            const [key, innerTypeObj]: [string, unknown] = Object.entries(v)[0]
-            const innerType = typeOf(innerTypeObj)
-
-            if (innerType === JsType.String) {
-                cases[key] = new CaseSpec([new TypeSpec(innerTypeObj as string)])
-            } else if (innerType === JsType.Array) {
-                const v = innerTypeObj as unknown[]
-                if (v.length === 0) {
-                    cases[key] = new CaseSpec([])
-                } else {
-                    for (const nestedTypeObj of v) {
-                        const nestedType = typeOf(nestedTypeObj)
+    parseStruct(structName: string, structFields: Record<string, unknown>): StructSpec {
+        const fields: { [name: string]: TypeSpec } = {}
     
-                        if (nestedType === JsType.Array) {
-                            // This is our empty case
-                            cases[key] = new CaseSpec([new TypeSpec((nestedTypeObj as string[])[0], true)])
-                        } else if (nestedType === JsType.String) {
-                            cases[key] = new CaseSpec([new TypeSpec(nestedTypeObj as string)])
-                        } else {
-                            throw new Error(`Unknown type: ${nestedType}`)
+        for (const [fieldName, fieldValue] of Object.entries(structFields)) {
+            const type = typeOf(fieldValue)
+    
+            if (type === JsType.Array) {
+                fields[fieldName] = new TypeSpec((fieldValue as string[])[0], true)
+            } else if (type === JsType.String) {
+                fields[fieldName] = new TypeSpec(fieldValue as string)
+            } else {
+                throw new Error(`Unhandled type: ${type}`)
+            }
+        }
+    
+        return new StructSpec(structName, fields)
+    }
+    
+    parseEnum(enumName: string, enumValues: unknown[]): EnumSpec {
+        // let s = `pub(crate) enum ${enumName} {\n`
+        const cases: { [name: string]: CaseSpec } = {}
+    
+        for (const value of enumValues) {
+            const type = typeOf(value)
+    
+            if (type === JsType.String) {
+                const v = value as string
+                cases[v] = new CaseSpec([new TypeSpec(v)])
+            } else if (type === JsType.Object) {
+                const v = value as Record<string, unknown>
+                const [key, innerTypeObj]: [string, unknown] = Object.entries(v)[0]
+                const innerType = typeOf(innerTypeObj)
+    
+                if (innerType === JsType.String) {
+                    cases[key] = new CaseSpec([new TypeSpec(innerTypeObj as string)])
+                } else if (innerType === JsType.Array) {
+                    const v = innerTypeObj as unknown[]
+                    if (v.length === 0) {
+                        cases[key] = new CaseSpec([])
+                    } else {
+                        for (const nestedTypeObj of v) {
+                            const nestedType = typeOf(nestedTypeObj)
+        
+                            if (nestedType === JsType.Array) {
+                                // This is our empty case
+                                cases[key] = new CaseSpec([new TypeSpec((nestedTypeObj as string[])[0], true)])
+                            } else if (nestedType === JsType.String) {
+                                cases[key] = new CaseSpec([new TypeSpec(nestedTypeObj as string)])
+                            } else {
+                                throw new Error(`Unknown type: ${nestedType}`)
+                            }
                         }
                     }
+    
+                } else {
+                    throw new Error(`Unknown type: ${type}`)
                 }
-
             } else {
-                throw new Error(`Unknown type: ${type}`)
+                throw new Error(`Unhandled JS type: ${type}`)
             }
-        } else {
-            throw new Error(`Unhandled JS type: ${type}`)
         }
+    
+        return new EnumSpec(enumName, cases)
     }
 
-    return new EnumSpec(enumName, cases)
+    parse(): TopLevelSpec[] {
+        const models: TopLevelSpec[] = Object.entries(this.ast.models).map(([key, value]) => {
+            const type = typeOf(value)
+            
+            if (type === JsType.String) {
+                return new TupleStructSpec(key, [new TypeSpec(value as string)])
+            } else if (type === JsType.Object) {
+                return this.parseStruct(key, value as Record<string, unknown>)
+            } else if (type === JsType.Array) {
+                return this.parseEnum(key, value as unknown[])
+            } else {
+                console.log(`Warning: Unhandled type for key "${key}": ${type}`)
+            }
+        }).filter(x => x != null) as TopLevelSpec[]
+
+        return models
+    }
 }
 
 /// This function does
@@ -252,19 +279,8 @@ function main() {
         throw new Error("Invalid input")
     }
 
-    const models: TopLevelSpec[] = Object.entries(obj.models).map(([key, value]) => {
-        const type = typeOf(value)
-        
-        if (type === JsType.String) {
-            return new TupleStructSpec(key, [new TypeSpec(value as string)])
-        } else if (type === JsType.Object) {
-            return generateStruct(key, value as Record<string, unknown>)
-        } else if (type === JsType.Array) {
-            return generateEnum(key, value as unknown[])
-        } else {
-            console.log(`Warning: Unhandled type for key "${key}": ${type}`)
-        }
-    }).filter(x => x != null) as TopLevelSpec[]
+    const parser = new AstParser(obj)
+    const models = parser.parse()
 
     const generator = new RustGenerator(models)
     generator.generate()
