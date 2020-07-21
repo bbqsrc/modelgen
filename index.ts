@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-non-null-assertion */
 /* eslint-disable @typescript-eslint/no-unsafe-call */
+
 // Import the yaml library, installed from npm
 import * as yaml from "js-yaml"
 import { Graph, alg } from "graphlib"
@@ -10,6 +11,7 @@ import fs from "fs"
 type AstModel = unknown[] | Record<string, unknown> | string
 
 type Ast = {
+    config: { [key: string]: unknown }
     models: { [key: string]: AstModel }
 }
 
@@ -27,10 +29,12 @@ enum JsType {
 
 class TypeSpec {
     isArray: boolean
-    type: string | TypeSpec
+    isOptional: boolean
+    type: string | TypeSpec | null
 
-    constructor(type: string | TypeSpec, isArray = false) {
+    constructor(type: string | TypeSpec | null, isArray = false, isOptional = false) {
         this.isArray = isArray
+        this.isOptional = isOptional
         this.type = type
     }
 }
@@ -119,18 +123,45 @@ type PathSpec = {
     typeName: string;
 }
 
+function alphabet(count: number) {
+    const o = []
+    for (let i = 97; i < 97 + count; ++i) {
+        o.push(String.fromCharCode(i))
+    }
+    return o
+}
+
 class RustGenerator {
+    private readonly derive: string[]
     private readonly models: TopLevelSpec[]
     private readonly paths: Paths
 
-    constructor(models: TopLevelSpec[]) {
+    constructor(config: { [key: string]: unknown }, models: TopLevelSpec[]) {
+        if (isStringArray(config.derive)) {
+            this.derive = config.derive
+        } else {
+            this.derive = []
+        }
+
         this.models = models
         this.paths = this.derivePaths()
     }
 
-    private resolveType(spec: string | TypeSpec): string {
+    private resolveType(spec: string | TypeSpec | null): string {
+        if (spec == null) {
+            return "()"
+        }
+
         if (typeof spec === "string") {
             return spec
+        }
+
+        if (spec.isArray && spec.isOptional) {
+            return `Option<Vec<${this.resolveType(spec.type)}>>`
+        }
+
+        if (spec.isOptional) {
+            return `Option<${this.resolveType(spec.type)}>`
         }
 
         if (spec.isArray) {
@@ -141,6 +172,9 @@ class RustGenerator {
     }
 
     private generateTupleStruct(model: TupleStructSpec) {
+        if (this.derive.length) {
+            console.log(`#[derive(${this.derive.join(", ")})]`)
+        }
         if (model.operands.length > 0) {
             const operands = model.operands.map(x => this.resolveType(x)).join(", ")
             console.log(`pub(crate) struct ${model.name}(${operands});\n`)
@@ -150,10 +184,14 @@ class RustGenerator {
     }
 
     private generateStruct(model: StructSpec) {
-        let s = `pub(crate) struct ${model.name} {\n`
+        let s = ""
+        if (this.derive.length) {
+            s += `#[derive(${this.derive.join(", ")})]\n`
+        }
+        s += `pub(crate) struct ${model.name} {\n`
         
         const fields = Object.entries(model.fields).map(([key, value]) => {
-            return `    ${key}: ${this.resolveType(value)},`
+            return `    pub(crate) ${key}: ${this.resolveType(value)},`
         })
 
         s += fields.join("\n")
@@ -162,7 +200,11 @@ class RustGenerator {
     }
 
     private generateEnum(model: EnumSpec) {
-        let s = `pub(crate) enum ${model.name} {\n`
+        let s = "#[repr(C, u8)]\n"
+        if (this.derive.length) {
+            s += `#[derive(${this.derive.join(", ")})]\n`
+        }
+        s += `pub(crate) enum ${model.name} {\n`
         const cases = Object.entries(model.cases).map(([key, value]) => {
             if (value.operands.length === 0) {
                 return `    ${key},`
@@ -176,17 +218,80 @@ class RustGenerator {
         console.log(s)
     }
 
+    private generateTaggedUnionImpl(model: EnumSpec) {
+        const typeIds = Object.values(model.cases).map((value) => {
+            if (value.operands.length !== 1) {
+                return `            TypeId::of::<__Invalid>(),`
+            } else {
+                return `            TypeId::of::<${this.resolveType(value.operands[0])}>(),`
+            }
+        }).join("\n")
+        const s = `unsafe impl TaggedUnion for ${model.name} {
+    type Repr = u8;
+    
+    unsafe fn is<T: Any>(&self) -> bool {
+        #[allow(dead_code)]
+        enum __Invalid {}
+
+        const TAGS: [TypeId; ${Object.keys(model.cases).length}] = [
+${typeIds}
+        ];
+
+        TAGS[Self::tag(self) as usize] == TypeId::of::<T>()
+    }
+}
+`
+        console.log(s)
+    }
+
+    private generateTraceImpl(model: TopLevelSpec) {
+        let items = []
+
+        if (model instanceof TupleStructSpec) {
+            for (let i = 0; i < model.operands.length; ++i) {
+                items.push(`        self.${i}.trace(marker);`)
+            }
+        } else if (model instanceof EnumSpec) {
+            items = Object.entries(model.cases).map(([key, value]) => {
+                if (value.operands.length === 0) {
+                    return `        ${model.name}::${key} => {},`
+                } else {
+                    return `        ${model.name}::${key}(${alphabet(value.operands.length).join(", ")}) => {
+${alphabet(value.operands.length).map(x => `            ${x}.trace(marker);`).join("\n")}
+        },`
+                }
+            })
+        } else if (model instanceof StructSpec) {
+            for (const field of Object.keys(model.fields)) {
+                items.push(`        self.${field}.trace(marker);`)
+            }
+        } else {
+            throw new TypeError("impossible")
+        }
+
+        const s = `impl Trace for ${model.name} {
+    fn trace(&self, marker: &Marker) {
+${items.join("\n")}
+    }
+}
+`
+        console.log(s)
+    }
+
     private generateModels() {
         for (const model of this.models) {
             if (model instanceof TupleStructSpec) {
                 this.generateTupleStruct(model)
             } else if (model instanceof EnumSpec) {
                 this.generateEnum(model)
+                this.generateTaggedUnionImpl(model)
             } else if (model instanceof StructSpec) {
                 this.generateStruct(model)
             } else {
                 throw new TypeError("impossible")
             }
+
+            this.generateTraceImpl(model)
         }
     }
 
@@ -272,7 +377,7 @@ impl From<${toType.name}> for ${fromType.name} {
         for (const cycleList of cycles) {
             for (const longEnumCase of cycleList.filter(x => x.includes("::"))) {
                 const [parent, enumValue] = longEnumCase.split("::")
-                const [enumCase, enumIndex] = enumValue.split("#")
+                const [enumCase] = enumValue.split("#")
                 const model = this.models.find(x => x.name === parent) as EnumSpec
 
                 // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
@@ -367,6 +472,26 @@ impl From<${toType.name}> for ${fromType.name} {
     }
 }
 
+function isArray(input: unknown): input is unknown[] {
+    return typeOf(input) === JsType.Array
+}
+
+function isStringArray(input: unknown): input is string[] {
+    if (typeOf(input) !== JsType.Array) {
+        return false
+    }
+
+    if ((input as unknown[]).find(x => typeOf(x) != JsType.String)) {
+        return false
+    }
+
+    return true
+}
+
+function isString(input: unknown): input is string {
+    return typeOf(input) === JsType.String
+}
+
 class AstParser {
     private readonly ast: Ast
 
@@ -374,18 +499,43 @@ class AstParser {
         this.ast = ast
     }
 
+    private parseType(input: unknown): TypeSpec {
+        if (isArray(input)) {
+            // An empty array indicates an empty type
+            if (input.length === 0) {
+                return new TypeSpec(null)
+            }
+
+            // If it's one item, it indicates an array of something
+            if (input.length === 1) {
+                return new TypeSpec(this.parseType(input[0]), true)
+            }
+
+            // If it's more than one, it's a tuple-ish type
+            throw new Error('tuple not supported in this position')
+        } else if (isString(input)) {
+            const isOptional = input.endsWith("?")
+            
+            if (isOptional) {
+                return new TypeSpec(input.substring(0, input.length - 1), false, isOptional)
+            } else {
+                return new TypeSpec(input)
+            }
+        } else {
+            throw new Error('no')
+        }
+    }
+
     private parseStruct(structName: string, structFields: Record<string, unknown>): StructSpec {
         const fields: { [name: string]: TypeSpec } = {}
     
         for (const [fieldName, fieldValue] of Object.entries(structFields)) {
-            const type = typeOf(fieldValue)
-    
-            if (type === JsType.Array) {
-                fields[fieldName] = new TypeSpec((fieldValue as string[])[0], true)
-            } else if (type === JsType.String) {
-                fields[fieldName] = new TypeSpec(fieldValue as string)
+            // const type = typeOf(fieldValue)
+            const result = this.parseType(fieldValue)
+            if (result != null) {
+                fields[fieldName] = result
             } else {
-                throw new Error(`Unhandled type: ${type}`)
+                throw new Error("surprise null")
             }
         }
     
@@ -399,22 +549,10 @@ class AstParser {
         }
 
         if (array.length === 1) {
-            return new CaseSpec([
-                new TypeSpec((array as string[])[0], true)
-            ])
+            return new CaseSpec([this.parseType(array)])
         }
 
-        return new CaseSpec(array.map(obj => {
-            const type = typeOf(obj)
-
-            if (type === JsType.Array) {
-                return new TypeSpec((obj as string[])[0], true)
-            } else if (type === JsType.String) {
-                return new TypeSpec(obj as string)
-            } else {
-                throw new Error(`Unknown type: ${type}`)
-            }
-        }))
+        return new CaseSpec(array.map(obj => this.parseType(obj)))
     }
 
     private parseEnum(enumName: string, enumValues: unknown[]): EnumSpec {
@@ -451,14 +589,14 @@ class AstParser {
         const models: TopLevelSpec[] = Object.entries(this.ast.models).map(([key, value]) => {
             const type = typeOf(value)
             
-            if (type === JsType.String ) {
+            if (type === JsType.String) {
                 return new TupleStructSpec(key, [new TypeSpec(value as string)])
             } else if (type === JsType.Object) {
                 return this.parseStruct(key, value as Record<string, unknown>)
             } else if (type === JsType.Array) {
                 if ((value as unknown[]).length === 1) {
                     return new TupleStructSpec(key, [
-                        new TypeSpec((value as string[])[0], true)
+                        this.parseType(value)
                     ])
                 }
                 return this.parseEnum(key, value as unknown[])
@@ -491,7 +629,7 @@ function main() {
 
     // console.log(JSON.stringify(models, null, 2))
 
-    const generator = new RustGenerator(models)
+    const generator = new RustGenerator(obj.config, models)
     generator.generate()
 }
 

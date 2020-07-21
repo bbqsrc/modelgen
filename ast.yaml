@@ -70,3 +70,159 @@ models:
     - Rational
     - Float
     - Complex
+
+  Constructor:
+    identifier: Identifier
+    field_names: [Identifier]
+  
+  FieldSpec:
+    identifier: Identifier
+    accesssor: Identifier
+    mutator: Identifier?
+
+  Program:
+    commands_or_definitions: [CommandOrDefinition]
+  
+  Pattern:
+    - Identifier
+    - Datum: PatternDatum
+    - Underscore: []
+    - List: [Pattern]
+    - Vector: [Pattern]
+    - ImproperList: [[Pattern], Pattern]
+    - EllipsisList: [[Pattern], [Pattern]]
+    - EllipsisVector: [[Pattern], [Pattern]]
+    - EllipsisImproperList: [[Pattern], [Pattern], Pattern]
+
+  Template:
+    - Identifier
+    - Datum: PatternDatum
+    - List: [Template]
+    - Vector: [Template]
+    - ImproperList: [[Template], Template]
+
+  PatternDatum:
+    - String
+    - Character: char
+    - Boolean: bool
+    - Number
+    - ByteVector: [u8]
+
+  SyntaxDefinition:
+    keyword: Identifier
+    transformer_spec: TransformerSpec
+
+  Assignment:
+    identifier: Identifier
+    expression: Expression
+
+  Body:
+    definitions: [Definition]
+    sequence: [Expression]
+  
+  Define:
+    identifier: Identifier
+    expression: Expression
+  
+  Definition:
+    - Define
+    - DefineValues
+    - DefineRecordType
+    - SyntaxDefinition
+    - Begin: [Definition]
+  
+  DefineValues:
+    formals: Formals
+    body: Body
+  
+  DefineRecordType:
+    identifier: Identifier
+    constructor: Constructor
+    predicate: Identifier
+    field_specs: [FieldSpec]
+
+  DerivedExpression:
+    - Cond
+    - Case
+    - And
+    - Or
+    - When
+    - Unless
+    - Let
+    - LetStar
+    - Letrec
+    - LetrecStar
+    - LetValues
+    - LetStarValues
+    - Begin: [Expression]
+    - Do
+    - DelayForce
+    - Delay
+    - Parameterize
+    - Guard
+    - Quasiquotation
+    - CaseLambda
+
+  Let:
+    name: Identifier?
+    bindings: [BindingSpec]
+    body: Body
+  
+  BindingSpec:
+    identifier: Identifier
+    expression: Expression
+
+  Cond:
+    clauses: [CondClause]
+    tail: [Expression]
+  
+  CondClause:
+    test: Expression
+    tail: Tail
+
+  Case:
+    expression: Expression
+    clauses: [CaseClause]
+    tail: Tail
+  
+  CaseClause:
+    data: [Datum]
+    tail: Tail
+  
+  Tail:
+    - Recipient: Expression
+    - Sequence: [Expression]
+
+  If:
+    test: Expression
+    consequent: Expression
+    alternate: Expression?
+  
+  Formals:
+    - Identifier
+    - List: [Identifier]
+    - ImproperList: [[Identifier], Identifier]
+  
+  LambdaExpression:
+    formals: Formals
+    body: Body
+
+  Exactness:
+    - Exact: []
+    - Inexact: []
+    - Unspecified: []
+  
+  Signedness:
+    - Plus: []
+    - Minus: []
+    - Unsigned: []
+  
+  Quasiquotation:
+    - Datum: [usize, Datum]
+    - Unquotation: [usize, Quasiquotation]
+    - List: [usize, [Quasiquotation]]
+    - ImproperList: [usize, [Quasiquotation], Quasiquotation]
+    - Vector: [usize, [Quasiquotation]]
+    - Expression: [usize, Expression]
+config:
+  derive: [Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash]
