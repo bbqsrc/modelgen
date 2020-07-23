@@ -1,9 +1,9 @@
 models:
   Atom:
-    - Datum
-    - Expression
-    - Record
-    - Procedure
+    - Datum: ~Datum
+    - Expression: ~Expression
+    - Record: ~Record
+    - Procedure: ~Procedure
  
   Record:
     - EmptyList: []
@@ -24,42 +24,42 @@ models:
     - Boolean: bool
     - Number
     - Character: char
-    - String: String
+    - String: ~str
     - Identifier
     - Label: usize
     - Labelled: [usize, Datum] # -> Labelled(usize, Datum)
     - EmptyList: [] # -> EmptyList
 
   CommandOrDefinition:
-    - Command: Expression
-    - Definition
+    - Command: ~Expression
+    - Definition: ~Definition
     - Begin: [CommandOrDefinition]
 
   Expression:
     - Identifier
-    - Literal
-    - ProcedureCall
-    - LambdaExpression
-    - Conditional: If
-    - Assignment
-    - DerivedExpression
-    - MacroUse
-    - MacroBlock
-    - Includer
+    - Literal: ~Literal
+    - ProcedureCall: ~ProcedureCall
+    - LambdaExpression: ~LambdaExpression
+    - Conditional: ~If
+    - Assignment: ~Assignment
+    - DerivedExpression: ~DerivedExpression
+    - MacroUse: ~MacroUse
+    - MacroBlock: ~MacroBlock
+    - Includer: ~Includer
 
   ProcedureCall:
     operator: Expression
     operands: [Expression]
 
-  Identifier: String
+  Identifier: ~str
 
   Literal:
-    - Quotation: Datum
-    - SelfEvaluating
+    - Quotation: ~Datum
+    - SelfEvaluating: ~SelfEvaluating
 
   SelfEvaluating:
     - Vector: [Datum]
-    - String
+    - String: ~str
     - ByteVector: [u8]
     - Character: char
     - Boolean: bool
@@ -85,14 +85,28 @@ models:
   
   Pattern:
     - Identifier
-    - Datum: PatternDatum
     - Underscore: []
     - List: [Pattern]
+    - ImproperList: ~PatternImproperList
+    - EllipsisList: ~PatternEllipsisList
+    - EllipsisImproperList: ~PatternEllipsisImproperList
     - Vector: [Pattern]
-    - ImproperList: [[Pattern], Pattern]
-    - EllipsisList: [[Pattern], [Pattern]]
-    - EllipsisVector: [[Pattern], [Pattern]]
-    - EllipsisImproperList: [[Pattern], [Pattern], Pattern]
+    - EllipsisVector: ~PatternEllipsisVector
+    - Datum: ~PatternDatum
+
+  PatternImproperList:
+    head: [Pattern]
+    tail: Pattern
+  PatternEllipsisList:
+    head: [Pattern]
+    tail: [Pattern]
+  PatternEllipsisVector:
+    head: [Pattern]
+    tail: [Pattern]
+  PatternEllipsisImproperList:
+    head: [Pattern]
+    mid: [Pattern]
+    tail: Pattern
 
   Template:
     - Identifier
@@ -102,7 +116,7 @@ models:
     - ImproperList: [[Template], Template]
 
   PatternDatum:
-    - String
+    - String: ~str
     - Character: char
     - Boolean: bool
     - Number
@@ -110,7 +124,7 @@ models:
 
   SyntaxDefinition:
     keyword: Identifier
-    transformer_spec: TransformerSpec
+    transformer_spec: ~TransformerSpec
 
   Assignment:
     identifier: Identifier
@@ -125,10 +139,10 @@ models:
     expression: Expression
   
   Definition:
-    - Define
-    - DefineValues
-    - DefineRecordType
-    - SyntaxDefinition
+    - Define: ~Define
+    - DefineValues: ~DefineValues
+    - DefineRecordType: ~DefineRecordType
+    - SyntaxDefinition: ~SyntaxDefinition
     - Begin: [Definition]
   
   DefineValues:
@@ -204,8 +218,8 @@ models:
     - ImproperList: [[Identifier], Identifier]
   
   LambdaExpression:
-    formals: Formals
-    body: Body
+    formals: ~Formals
+    body: ~Body
 
   Exactness:
     - Exact: []
@@ -218,11 +232,42 @@ models:
     - Unsigned: []
   
   Quasiquotation:
-    - Datum: [usize, Datum]
-    - Unquotation: [usize, Quasiquotation]
-    - List: [usize, [Quasiquotation]]
-    - ImproperList: [usize, [Quasiquotation], Quasiquotation]
-    - Vector: [usize, [Quasiquotation]]
-    - Expression: [usize, Expression]
+    - Datum: ~Datum
+    - Unquotation: ~Quasiquotation
+    - List: [Quasiquotation]
+    - ImproperList: ~QqImproperList
+    - Vector: [Quasiquotation]
+    - Expression: ~Expression
+
+  QqImproperList:
+    head: [Quasiquotation]
+    tail: ~Quasiquotation
+  
+  # Temporary empty impls
+  Float: []
+  Rational: []
+  Complex: []
+  Integer: []
+  LetValues: []
+  MacroUse: []
+  Unless: []
+  CaseLambda: []
+  Guard: []
+  Parameterize: []
+  Delay: []
+  DelayForce: []
+  Do: []
+  LetStarValues: []
+  LetrecStar: []
+  Letrec: []
+  LetStar: []
+  When: []
+  Or: []
+  And: []
+  MacroBlock: []
+  Includer: []
+  Procedure: []
+  TransformerSpec: []
 config:
   derive: [Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash]
+  visibility: pub

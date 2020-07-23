@@ -27,15 +27,27 @@ enum JsType {
     Number
 }
 
-class TypeSpec {
+interface ITypeSpec {
     isArray: boolean
     isOptional: boolean
+    isBoxed: boolean
+    isSized: boolean
+}
+
+class TypeSpec implements ITypeSpec {
     type: string | TypeSpec | null
+    isArray: boolean
+    isOptional: boolean
+    isBoxed: boolean
+    isSized: boolean
 
     constructor(type: string | TypeSpec | null, isArray = false, isOptional = false) {
         this.isArray = isArray
         this.isOptional = isOptional
         this.type = type
+
+        this.isBoxed = false
+        this.isSized = true
     }
 }
 
@@ -121,6 +133,7 @@ type PathSpec = {
     enumName: string;
     enumCase: string;
     typeName: string;
+    typeSpec: TypeSpec
 }
 
 function alphabet(count: number) {
@@ -133,6 +146,7 @@ function alphabet(count: number) {
 
 class RustGenerator {
     private readonly derive: string[]
+    private readonly visibility?: string
     private readonly models: TopLevelSpec[]
     private readonly paths: Paths
 
@@ -143,11 +157,15 @@ class RustGenerator {
             this.derive = []
         }
 
+        if (isString(config.visibility)) {
+            this.visibility = config.visibility
+        }
+
         this.models = models
         this.paths = this.derivePaths()
     }
 
-    private resolveType(spec: string | TypeSpec | null): string {
+    private resolveType(spec: string | TypeSpec | null, ignoreWrappers = false): string {
         if (spec == null) {
             return "()"
         }
@@ -156,42 +174,54 @@ class RustGenerator {
             return spec
         }
 
-        if (spec.isArray && spec.isOptional) {
-            return `Option<Vec<${this.resolveType(spec.type)}>>`
-        }
+        if (!ignoreWrappers) {
+            if (spec.isOptional) {
+                if (spec.isArray) {
+                    return `Option<Box<[${this.resolveType(spec.type)}]>>`
+                }
 
-        if (spec.isOptional) {
-            return `Option<${this.resolveType(spec.type)}>`
-        }
+                if (spec.isBoxed) {
+                    return `Option<Box<${this.resolveType(spec.type)}>>`
+                }
 
-        if (spec.isArray) {
-            return `Vec<${this.resolveType(spec.type)}>`
+                return `Option<${this.resolveType(spec.type)}>`
+            }
+
+            if (spec.isArray) {
+                return `Box<[${this.resolveType(spec.type)}]>`
+            } else if (spec.isBoxed) {
+                return `Box<${this.resolveType(spec.type)}>`
+            }
         }
 
         return this.resolveType(spec.type)
     }
 
     private generateTupleStruct(model: TupleStructSpec) {
+        const vis = this.visibility ? `${this.visibility} ` : ''
         if (this.derive.length) {
             console.log(`#[derive(${this.derive.join(", ")})]`)
         }
         if (model.operands.length > 0) {
-            const operands = model.operands.map(x => this.resolveType(x)).join(", ")
-            console.log(`pub(crate) struct ${model.name}(${operands});\n`)
+            const operands = model.operands.map(x => `${vis}${this.resolveType(x)}`).join(", ")
+            console.log(`${vis}struct ${model.name}(${operands});\n`)
         } else {
-            console.log(`pub(crate) struct ${model.name};\n`)
+            console.log(`${vis}struct ${model.name};\n`)
         }
     }
 
     private generateStruct(model: StructSpec) {
+        const vis = this.visibility ? `${this.visibility} ` : ''
+
         let s = ""
         if (this.derive.length) {
             s += `#[derive(${this.derive.join(", ")})]\n`
         }
-        s += `pub(crate) struct ${model.name} {\n`
+
+        s += `${vis}struct ${model.name} {\n`
         
         const fields = Object.entries(model.fields).map(([key, value]) => {
-            return `    pub(crate) ${key}: ${this.resolveType(value)},`
+            return `    ${vis}${key}: ${this.resolveType(value)},`
         })
 
         s += fields.join("\n")
@@ -200,11 +230,15 @@ class RustGenerator {
     }
 
     private generateEnum(model: EnumSpec) {
-        let s = "#[repr(C, u8)]\n"
+        const vis = this.visibility ? `${this.visibility} ` : ''
+        let s = ""
+        if (Object.values(model.cases).find(x => x.operands.length > 0) != null) {
+            s += "#[repr(C, u8)]\n"
+        }
         if (this.derive.length) {
             s += `#[derive(${this.derive.join(", ")})]\n`
         }
-        s += `pub(crate) enum ${model.name} {\n`
+        s += `${vis}enum ${model.name} {\n`
         const cases = Object.entries(model.cases).map(([key, value]) => {
             if (value.operands.length === 0) {
                 return `    ${key},`
@@ -254,13 +288,15 @@ ${typeIds}
         } else if (model instanceof EnumSpec) {
             items = Object.entries(model.cases).map(([key, value]) => {
                 if (value.operands.length === 0) {
-                    return `        ${model.name}::${key} => {},`
+                    return `            ${model.name}::${key} => {},`
                 } else {
-                    return `        ${model.name}::${key}(${alphabet(value.operands.length).join(", ")}) => {
-${alphabet(value.operands.length).map(x => `            ${x}.trace(marker);`).join("\n")}
-        },`
+                    return `            ${model.name}::${key}(${alphabet(value.operands.length).join(", ")}) => {
+${alphabet(value.operands.length).map(x => `                ${x}.trace(marker);`).join("\n")}
+            },`
                 }
             })
+            items.unshift("        match self {")
+            items.push("        }")
         } else if (model instanceof StructSpec) {
             for (const field of Object.keys(model.fields)) {
                 items.push(`        self.${field}.trace(marker);`)
@@ -302,59 +338,115 @@ ${items.join("\n")}
                 if (fromType == null) {
                     throw new Error(`From type should not be null: ${keyFrom}`)
                 }
-                const toType = this.models.find(x => x.name === keyTo) || { name: keyTo } as StructSpec
+                let toType = this.models.find(x => x.name === keyTo)
+                // if (keyTo === "str") {
+                //     toType = { name: "Box<str>" } as StructSpec
+                // } else 
+                if (toType == null) {
+                    toType = { name: keyTo } as StructSpec
+                }
+
                 if (toType == null) {
                     throw new Error(`To type should not be null: ${keyTo}`)
                 }
-                this.generateCastFn(fromType, toType, path)
+
+                let isLossless = false
+                if (this.paths[keyTo] != null) {
+                    if (this.paths[keyTo][keyFrom] != null) {
+                        isLossless = true
+                    }
+                }
+
+                this.generateCastFn(fromType, toType, path, isLossless)
             })
         })
     }
 
-    private generateCastFn(fromType: TopLevelSpec, toType: TopLevelSpec, path: PathSpec[]) {
-        const letExpr = path.reduceRight((acc, cur) => {
-            return `${cur.enumName}::${cur.enumCase}(${acc})`
-        }, "value")
+    private generateCastFn(fromType: TopLevelSpec, toType: TopLevelSpec, path: PathSpec[], isLossless: boolean) {
+        const letExpr: string[] = []
+
+        // const lastItem = path.length - 1
+        let acc = { value: "value", wasBoxed: false }
+        for (let i = path.length - 1; i >= 0; --i) {
+            const cur = path[i]
+            let item
+            const { value } = acc
+
+            const before = path[i - 1]
+            const matchValue = before != null && before.typeSpec.isBoxed && !cur.typeSpec.isArray ? "*value" : "value"
+
+            if (i === path.length - 1) {
+                if (cur.typeSpec.isBoxed && !cur.typeSpec.isArray && cur.typeSpec.isSized) {
+                    letExpr.unshift(`        if let ${cur.enumName}::${cur.enumCase}(value) = ${matchValue} { return Ok(*value) } else { return Err(CastError::new()) };`)
+                    item = `${cur.enumName}::${cur.enumCase}(Box::new(${value}))`
+                } else {
+                    letExpr.unshift(`        if let ${cur.enumName}::${cur.enumCase}(value) = ${matchValue} { return Ok(value) } else { return Err(CastError::new()) };`)
+                    item = `${cur.enumName}::${cur.enumCase}(${value})`
+                }
+            } else {
+                if (cur.typeSpec.isBoxed && !cur.typeSpec.isArray && cur.typeSpec.isSized) {
+                    letExpr.unshift(`        let value = if let ${cur.enumName}::${cur.enumCase}(value) = ${matchValue} { value } else { return Err(CastError::new()) };`)
+                    item = `${cur.enumName}::${cur.enumCase}(Box::new(${value}))`
+                } else {
+                    letExpr.unshift(`        let value = if let ${cur.enumName}::${cur.enumCase}(value) = ${matchValue} { value } else { return Err(CastError::new()) };`)
+                    item = `${cur.enumName}::${cur.enumCase}(${value})`
+                }
+            }
+            acc = { value: item, wasBoxed: cur.typeSpec.isBoxed && !cur.typeSpec.isArray }
+        }
+        const fromExpr = acc.value
+        // const fromExpr = path.reduceRight((acc, cur, index) => {
+            
+        // }, { value: "value", wasBoxed: false }).value
 
         const tryFrom = `\
 impl TryFrom<${fromType.name}> for ${toType.name} {
     type Error = CastError<${fromType.name}, ${toType.name}>;
 
     fn try_from(value: ${fromType.name}) -> Result<Self, Self::Error> {
-        if let ${letExpr} = value {
-            Ok(value)
-        } else {
-            Err(CastError::new())
-        }
+${letExpr.join("\n")}
     }
 }
 `
         const from = `\
 impl From<${toType.name}> for ${fromType.name} {
     fn from(value: ${toType.name}) -> Self {
-        ${letExpr}
+        ${fromExpr}
     }
 }
 `
-        console.log(tryFrom)
+        if (!isLossless) {
+            console.log(tryFrom)
+        }
         console.log(from)
     }
 
     private derivePaths(): Paths {
         const graph = new Graph({ directed: true })
-
         // Walk the models and generate paths
         for (const a of this.models) {
             if (a instanceof StructSpec) {
                 for (const [key, value] of Object.entries(a.fields)) {
+                    if (value.isArray) {
+                        continue
+                    }
+
                     const mid = `${a.name}.${key}`;
                     graph.setEdge(a.name, mid)
-                    graph.setEdge(mid, this.resolveType(value))
+                    graph.setEdge(mid, this.resolveType(value, true))
                 }
                 continue
             }
                 
             if (a instanceof TupleStructSpec) {
+                for (let i = 0; i < a.operands.length; ++i) {
+                    if (a.operands[i].isArray) {
+                        continue
+                    }
+                    const mid = `${a.name}.${i}`;
+                    graph.setEdge(a.name, mid)
+                    graph.setEdge(mid, this.resolveType(a.operands[i], true))
+                }
                 continue
             }
 
@@ -362,10 +454,12 @@ impl From<${toType.name}> for ${fromType.name} {
                 .filter((x) => x[1].operands.length >= 1)
 
             for (const [key, case_] of caseSpecs) {
-                
                 for (const operand of case_.operands) {
+                    if (operand.isArray) {
+                        continue
+                    }
                     const mid = `${a.name}::${key}#${case_.operands.length}`
-                    const resolved = this.resolveType(operand)
+                    const resolved = this.resolveType(operand, true)
                     graph.setEdge(a.name, mid)
                     graph.setEdge(mid, resolved)
                 }
@@ -373,32 +467,40 @@ impl From<${toType.name}> for ${fromType.name} {
         }
 
         const cycles = alg.findCycles(graph)
+        console.error(cycles)
 
         for (const cycleList of cycles) {
+            const causeType = cycleList.pop()
+
             for (const longEnumCase of cycleList.filter(x => x.includes("::"))) {
                 const [parent, enumValue] = longEnumCase.split("::")
-                const [enumCase] = enumValue.split("#")
-                const model = this.models.find(x => x.name === parent) as EnumSpec
+                const [enumCase, indexStr] = enumValue.split("#")
+                const index = parseInt(indexStr, 10) - 1
 
-                // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
-                for (const operand of model.cases[enumCase].operands) {
-                    const type = this.resolveType(operand)
-                    if (!operand.isArray && type === parent) {
-                        operand.type = `Box<${type}>`
-                    }
-                }
+                const model = this.models.find(x => x.name === parent) as EnumSpec
+                const operand = model.cases[enumCase].operands[index]
+                operand.isBoxed = true
             }
 
             for (const longStructField of cycleList.filter(x => x.includes("."))) {
                 const [parent, structField] = longStructField.split(".")
-                const model = this.models.find(x => x.name === parent) as StructSpec
-                
-                const type = this.resolveType(model.fields[structField])
-                model.fields[structField].type = `Box<${type}>`
+                const structIndex = parseInt(structField, 10)
+                if (!Number.isNaN(structIndex)) {
+                    // Tuple struct
+                    const model = this.models.find(x => x.name === parent) as TupleStructSpec
+                    model.operands[structIndex].isBoxed = true
+
+                } else {
+                    // Ordinary struct
+                    const model = this.models.find(x => x.name === parent) as StructSpec
+                    model.fields[structField].isBoxed = true
+                }
+
             }
         }
 
         const paths = Object.entries(alg.dijkstraAll(graph)).map(([topKey, topValue]) => {
+            // console.error(topKey, topValue)
             if (topKey.includes("::") || topKey.includes(".")) {
                 return {}
             }
@@ -436,12 +538,28 @@ impl From<${toType.name}> for ${fromType.name} {
                                 enumKey = key
                             } else if (enumKey != null) {
                                 const [enumName, enumValue] = enumKey.split("::")
-                                const [enumCase, enumIndex] = enumValue.split("#")
-                                if (parseInt(enumIndex, 0) != 1) {
+                                const [enumCase, enumIndexStr] = enumValue.split("#")
+                                const enumIndex = parseInt(enumIndexStr, 0) - 1
+                                if (enumIndex !== 0) {
                                     return null
                                 }
-                                newPath.push({ enumName, enumCase, typeName: key })
-                                typeName = key
+                                const model = this.models.find(x => x.name === enumName) as EnumSpec
+                                const type = model.cases[enumCase].operands[enumIndex]
+
+                                // Special case for str
+                                if (type.type === "str") {
+                                    type.isSized = false
+                                    typeName = "Box<str>"
+                                } else {
+                                    typeName = this.resolveType(type, true)
+                                }
+
+                                newPath.push({
+                                    enumName,
+                                    enumCase,
+                                    typeName,
+                                    typeSpec: type
+                                })
                                 enumKey = null
                             } else {
                                 newPath.push(key)
@@ -466,9 +584,30 @@ impl From<${toType.name}> for ${fromType.name} {
         return paths as Paths
     }
 
+    private generateTest() {
+        const prints = this.models.map(x => `    println!("${x.name}: {}", std::mem::size_of::<${x.name}>());`)
+        console.log(`#[cfg(test)]\n#[test]\nfn print_model_sizes() {
+${prints.join("\n")}
+}`)
+    }
+
+    private generateHeaders() {
+        console.log("#![feature(const_type_id)]")
+        console.log()
+        console.log("use std::any::{Any, TypeId};")
+        console.log("use std::convert::TryFrom;")
+        console.log("use bcgc::*;")
+        console.log()
+        console.log("pub struct CastError<A: ?Sized + 'static, B: ?Sized + 'static>(std::marker::PhantomData<(&'static A, &'static B)>);")
+        console.log("impl<A: ?Sized + 'static, B: ?Sized + 'static> CastError<A, B> { pub(crate) fn new() -> Self { Self(std::marker::PhantomData) } }")
+        console.log()
+    }
+
     generate() {
+        this.generateHeaders()
         this.generateModels()
         this.generateCastFns()
+        this.generateTest()
     }
 }
 
@@ -515,12 +654,29 @@ class AstParser {
             throw new Error('tuple not supported in this position')
         } else if (isString(input)) {
             const isOptional = input.endsWith("?")
+            const isBoxed = input.startsWith("~")
+
+            let name: string = input
             
-            if (isOptional) {
-                return new TypeSpec(input.substring(0, input.length - 1), false, isOptional)
-            } else {
-                return new TypeSpec(input)
+            if (isBoxed) {
+                name = name.substring(1, name.length)
             }
+
+            if (isOptional) {
+                name = name.substring(0, name.length - 1)
+            }
+
+            const typeSpec = new TypeSpec(name)
+
+            if (isBoxed) {
+                typeSpec.isBoxed = true
+            }
+
+            if (isOptional) {
+                typeSpec.isOptional = true
+            }
+
+            return typeSpec
         } else {
             throw new Error('no')
         }
@@ -563,14 +719,14 @@ class AstParser {
     
             if (type === JsType.String) {
                 const v = value as string
-                cases[v] = new CaseSpec([new TypeSpec(v)])
+                cases[v] = new CaseSpec([this.parseType(v)])
             } else if (type === JsType.Object) {
                 const v = value as Record<string, unknown>
                 const [key, innerTypeObj]: [string, unknown] = Object.entries(v)[0]
                 const innerType = typeOf(innerTypeObj)
     
                 if (innerType === JsType.String) {
-                    cases[key] = new CaseSpec([new TypeSpec(innerTypeObj as string)])
+                    cases[key] = new CaseSpec([this.parseType(innerTypeObj as string)])
                 } else if (innerType === JsType.Array) {
                     cases[key] = this.parseEnumValueArray(innerTypeObj as unknown[])
                 } else {
@@ -590,14 +746,12 @@ class AstParser {
             const type = typeOf(value)
             
             if (type === JsType.String) {
-                return new TupleStructSpec(key, [new TypeSpec(value as string)])
+                return new TupleStructSpec(key, [this.parseType(value as string)])
             } else if (type === JsType.Object) {
                 return this.parseStruct(key, value as Record<string, unknown>)
             } else if (type === JsType.Array) {
-                if ((value as unknown[]).length === 1) {
-                    return new TupleStructSpec(key, [
-                        this.parseType(value)
-                    ])
+                if ((value as unknown[]).length <= 1) {
+                    return new TupleStructSpec(key, (value as unknown[]).map(x => this.parseType(x)))
                 }
                 return this.parseEnum(key, value as unknown[])
             } else {
